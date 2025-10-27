@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 class SuggestionAgent:
     """Generate suggestions using Gemini with RAG context"""
     
-    def __init__(self, api_key: str, retriever, model_name: str = "gemini-1.5-pro"):
+    def __init__(self, api_key: str, retriever, model_name: str = "gemini-2.0-flash-lite"):
         """
         Initialize suggestion agent
         

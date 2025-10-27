@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 import json
 import re
 import logging
+import time
 from .qualifiers import VaguenessQualifiers, COMMON_ACRONYMS
 
 logging.basicConfig(level=logging.INFO)
@@ -17,19 +18,85 @@ logger = logging.getLogger(__name__)
 class VaguenessDetector:
     """Detect vague language using Gemini AI"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-1.5-pro"):
+    def __init__(self, api_key: str, model_name: str = "gemini-2.0-flash-lite", max_retries: int = 3, timeout: int = 120):
         """
         Initialize vagueness detector
         
         Args:
             api_key: Gemini API key
-            model_name: Gemini model to use
+            model_name: Gemini model to use (gemini-2.0-flash-lite is fastest)
+            max_retries: Maximum number of retry attempts
+            timeout: Timeout in seconds for API calls
         """
         genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(model_name)
-        self.qualifiers = VaguenessQualifiers()
         
-        logger.info(f"Initialized VaguenessDetector with model: {model_name}")
+        # Try to list available models to verify API key works
+        try:
+            available_models = []
+            for m in genai.list_models():
+                if 'generateContent' in m.supported_generation_methods:
+                    available_models.append(m.name)
+            
+            if available_models:
+                logger.info(f"Available models: {', '.join(available_models)}")
+            else:
+                logger.warning("No models with generateContent support found!")
+        except Exception as e:
+            logger.warning(f"Could not list models: {e}")
+        
+        # Configure generation with timeout
+        generation_config = genai.GenerationConfig(
+            temperature=0.3,
+            top_p=0.95,
+            top_k=40,
+            max_output_tokens=2048,
+        )
+        
+        # Try to initialize model
+        try:
+            self.model = genai.GenerativeModel(
+                model_name,
+                generation_config=generation_config
+            )
+            logger.info(f"✅ Successfully initialized VaguenessDetector with model: {model_name}")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize model {model_name}: {e}")
+            # Try fallback models from Gemini 2.x family (in order of speed/availability)
+            fallback_models = [
+                "gemini-2.0-flash-lite",     # Fastest - 30 req/min
+                "gemini-2.5-flash-lite",     # Very fast - 15 req/min
+                "gemini-2.0-flash",          # Fast - 15 req/min
+                "gemini-2.5-flash",          # Fast - 10 req/min
+                "gemini-2.5-pro",            # Best quality - 5 req/min
+                "models/gemini-2.0-flash-lite",
+                "models/gemini-2.5-flash",
+            ]
+            for fallback in fallback_models:
+                try:
+                    logger.info(f"Trying fallback model: {fallback}")
+                    self.model = genai.GenerativeModel(
+                        fallback,
+                        generation_config=generation_config
+                    )
+                    logger.info(f"✅ Using fallback model: {fallback}")
+                    break
+                except Exception as e2:
+                    logger.warning(f"Fallback {fallback} also failed: {e2}")
+                    continue
+            else:
+                # No models worked
+                raise ValueError(
+                    f"Could not initialize any Gemini model. "
+                    f"Please check:\n"
+                    f"1. API key is valid\n"
+                    f"2. Gemini API is enabled in your Google Cloud project\n"
+                    f"3. You have access to Gemini models\n"
+                    f"Visit: https://makersuite.google.com/app/apikey"
+                )
+        
+        self.qualifiers = VaguenessQualifiers()
+        self.max_retries = max_retries
+        self.timeout = timeout
     
     def detect_vagueness_in_text(self, text: str, chunk_id: int = 0) -> Dict:
         """
@@ -100,31 +167,49 @@ Provide your response in JSON format with the following structure:
 Response:
 """
         
-        try:
-            response = self.model.generate_content(prompt)
-            
-            # Extract JSON from response
-            response_text = response.text.strip()
-            
-            # Try to parse JSON
-            # Remove markdown code blocks if present
-            if "```json" in response_text:
-                response_text = response_text.split("```json")[1].split("```")[0].strip()
-            elif "```" in response_text:
-                response_text = response_text.split("```")[1].split("```")[0].strip()
-            
-            result = json.loads(response_text)
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in Gemini analysis: {str(e)}")
-            return {
-                'is_vague': False,
-                'vague_phrases': [],
-                'categories': [],
-                'explanation': f"Error in analysis: {str(e)}",
-                'severity': 'unknown'
-            }
+        # Retry logic for network issues
+        for attempt in range(self.max_retries):
+            try:
+                # Generate content (timeout handled by generation_config)
+                response = self.model.generate_content(prompt)
+                
+                # Extract JSON from response
+                response_text = response.text.strip()
+                
+                # Try to parse JSON
+                # Remove markdown code blocks if present
+                if "```json" in response_text:
+                    response_text = response_text.split("```json")[1].split("```")[0].strip()
+                elif "```" in response_text:
+                    response_text = response_text.split("```")[1].split("```")[0].strip()
+                
+                result = json.loads(response_text)
+                return result
+                
+            except Exception as e:
+                error_msg = str(e)
+                
+                # Check if it's a network/timeout error
+                if any(x in error_msg.lower() for x in ['timeout', 'connect', '503', 'network']):
+                    if attempt < self.max_retries - 1:
+                        wait_time = (attempt + 1) * 2  # Exponential backoff: 2s, 4s, 6s
+                        logger.warning(f"Network error (attempt {attempt + 1}/{self.max_retries}): {error_msg}")
+                        logger.info(f"Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                        continue
+                    else:
+                        logger.error(f"Max retries reached. Error: {error_msg}")
+                else:
+                    logger.error(f"Error in Gemini analysis: {error_msg}")
+                
+                # Return safe fallback
+                return {
+                    'is_vague': False,
+                    'vague_phrases': [],
+                    'categories': [],
+                    'explanation': f"Error in analysis: {error_msg}",
+                    'severity': 'unknown'
+                }
     
     def _detect_acronyms(self, text: str) -> List[Dict]:
         """

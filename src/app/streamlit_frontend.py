@@ -10,6 +10,11 @@ from pathlib import Path
 import json
 import pandas as pd
 from datetime import datetime
+import logging
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Add src to path
 sys.path.append(str(Path(__file__).parent.parent))
@@ -89,14 +94,22 @@ def setup_sidebar():
     api_key = st.sidebar.text_input(
         "Gemini API Key",
         type="password",
-        help="Enter your Google Gemini API key"
-    )
+        help="Enter your Google Gemini API key")
     
-    # Model selection
+    # Model selection - All available Gemini models
     model = st.sidebar.selectbox(
         "Gemini Model",
-        ["gemini-1.5-pro", "gemini-1.5-flash"],
-        help="Select the Gemini model to use"
+        [
+            "gemini-2.0-flash-lite",      # FASTEST - 30 req/min, 1M tokens
+            "gemini-2.5-flash",           # Fast - 10 req/min, 250K tokens
+            "gemini-2.5-flash-lite",      # Very fast - 15 req/min, 250K tokens
+            "gemini-2.0-flash",           # Fast - 15 req/min, 1M tokens
+            "gemini-2.5-pro",             # Best quality - 5 req/min, 125K tokens
+            "gemini-2.5-flash-preview",   # Preview - 10 req/min, 250K tokens
+            "gemini-2.5-flash-lite-preview", # Preview - 15 req/min, 250K tokens
+        ],
+        index=0,  # Default to gemini-2.0-flash-lite (FASTEST!)
+        help="🏆 gemini-2.0-flash-lite is FASTEST (30 req/min). gemini-2.5-pro has best quality."
     )
     
     # Chunking parameters
@@ -241,9 +254,10 @@ def process_references(ref_files):
         st.success(f"✅ Processed {len(ref_files)} reference documents ({len(all_chunks)} chunks) in fast mode!")
         
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error processing reference documents: {str(e)}")
         import traceback
         st.error(f"Details: {traceback.format_exc()}")
+
 
 def detect_vagueness_tab():
     """Tab 2: Upload tender documents and detect vagueness"""
@@ -439,13 +453,19 @@ def load_tender_documents(tender_files):
         
         st.success(f"✅ Loaded {len(all_docs)} documents in fast mode!")
         
-        # Show summary with speed indicator
+        # Show summary with speed indicator and warnings
         for i, doc in enumerate(all_docs):
             pages = doc['total_pages']
-            st.write(f"{i+1}. **{doc['filename']}** - {pages} pages ⚡")
+            # Check if document has text
+            has_text = doc.get('full_text', '').strip() != ''
+            
+            if not has_text:
+                st.warning(f"{i+1}. **{doc['filename']}** - {pages} pages ⚠️ NO TEXT FOUND - May be scanned/image PDF")
+            else:
+                st.write(f"{i+1}. **{doc['filename']}** - {pages} pages ⚡")
         
     except Exception as e:
-        st.error(f"Error: {str(e)}")
+        st.error(f"Error loading documents: {str(e)}")
         import traceback
         st.error(f"Details: {traceback.format_exc()}")
 
