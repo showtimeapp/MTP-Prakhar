@@ -10,4 +10,4 @@ numpy
 tiktoken==0.5.2
 langchain==0.1.0
 langchain-community==0.0.13
-faiss-cpu==1.7.4
+faiss-cpu
